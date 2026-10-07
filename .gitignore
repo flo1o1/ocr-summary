@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+.venv/
+.DS_Store
+.ocr-summary-*/
+*.pdf
+*.jpg
+*.jpeg
+*.png
+*.heic
+*.heif
+build/
+dist/
+*.egg-info/

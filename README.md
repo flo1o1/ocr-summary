@@ -27,6 +27,7 @@ on the command line.
 - Long documents summarized in sections, then condensed into a final summary.
 - Temporary files cleaned up and originals replaced only after successful processing.
 - Image metadata read back and checked before the original is replaced.
+- Optional `--skip-processed` to leave files with an embedded description and keywords untouched.
 - Dry-run and verbose modes, suitable for manual use and scheduled jobs.
 - Standard-library-only Python script; no additional Python packages for the wrapper.
 
@@ -37,7 +38,7 @@ on the command line.
 - [OCRmyPDF](https://ocrmypdf.readthedocs.io/en/latest/installation.html) 17 or later.
 - [OCRmyPDF-AppleOCR](https://github.com/mkyt/OCRmyPDF-AppleOCR) 0.4 or later,
   installed into the same Python environment as OCRmyPDF.
-- Poppler's `pdftotext` command.
+- Poppler's `pdftotext` command, and `pdfinfo` when using `--skip-processed` with PDFs.
 - [ExifTool](https://exiftool.org/) for writing image metadata.
 - macOS `sips` (already included) for temporary image conversion.
 - [Ollama](https://ollama.com/) running locally, with the selected model downloaded.
@@ -178,6 +179,7 @@ All settings have defaults. Use `--help` to see their current values.
 | `--optimize LEVEL` | `0` | OCRmyPDF optimization level, from `0` through `3`. |
 | `--ocrmypdf-command PATH` | `ocrmypdf` | Executable name or path, without embedded arguments. |
 | `--pdftotext-command PATH` | `pdftotext` | Executable name or path, without embedded arguments. |
+| `--pdfinfo-command PATH` | `pdfinfo` | Executable name or path, without embedded arguments; used only by `--skip-processed`. |
 | `--command-timeout SECONDS` | Unlimited | Timeout for each OCR, extraction, or metadata subprocess. |
 
 Languages are passed separately to the AppleOCR plugin: `-l deu+eng` becomes
@@ -263,6 +265,7 @@ are not a deterministic filter for every possible model response.
 | --- | --- |
 | `-v`, `--verbose` | Show progress, subprocess output, section-condensation details, and the summary. |
 | `--redo-ocr` | Replace an existing invisible PDF OCR text layer while preserving visible text; ignored for images. |
+| `--skip-processed` | Skip files that already have both a description and keywords: PDF Subject and Keywords, or image `XMP-dc:Description` and `XMP-dc:Subject`. Skipped files get no OCR or model request and are reported only with `--verbose`. |
 | `--dry-run` | Print each filename, summary, and keyword list without modifying the originals. |
 | `-h`, `--help` | Show command-line help. |
 
@@ -271,6 +274,11 @@ Options can be combined:
 ```sh
 ocr-summary --dry-run --redo-ocr --verbose "Workshop notes.pdf"
 ```
+
+`--skip-processed` checks only whether both fields are filled, not who wrote
+them, so files you described manually are skipped too. Use it for scheduled runs
+over a folder. To process a skipped file again, run it without the option; the
+existing description and keywords are replaced.
 
 ## How it works
 

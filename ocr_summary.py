@@ -99,6 +99,8 @@ class OcrSettings:
         command: OCRmyPDF executable name or path, without arguments.
         text_command: pdftotext executable name or path, without
             arguments.
+        info_command: pdfinfo executable name or path, without
+            arguments; used only to detect already processed PDFs.
         command_timeout: Per-subprocess timeout in seconds; None is
             unlimited.
     """
@@ -111,6 +113,7 @@ class OcrSettings:
     optimize: int = 0
     command: str = "ocrmypdf"
     text_command: str = "pdftotext"
+    info_command: str = "pdfinfo"
     command_timeout: float | None = None
 
     def output_options(self) -> list[str]:
@@ -825,6 +828,44 @@ def write_image_metadata(
         raise WorkflowError("Image metadata verification failed; the original is preserved.")
 
 
+def has_pdf_metadata(source: Path, settings: OcrSettings, verbose: bool) -> bool:
+    """Report whether a PDF has both a Subject and Keywords.
+
+    Raises:
+        WorkflowError: The metadata cannot be read or times out.
+        OSError: The pdfinfo executable cannot be launched.
+    """
+    text = run_command(
+        [settings.info_command, "-enc", "UTF-8", str(source)],
+        verbose, capture_stdout=True, timeout=settings.command_timeout,
+    )
+    fields = {}
+    for line in text.splitlines():
+        name, separator, value = line.partition(":")
+        if separator and name in ("Subject", "Keywords"):
+            fields[name] = value.strip()
+    return bool(fields.get("Subject") and fields.get("Keywords"))
+
+
+def has_image_metadata(source: Path, settings: Settings, verbose: bool) -> bool:
+    """Report whether an image has an XMP description and keywords.
+
+    Raises:
+        WorkflowError: The metadata cannot be read or parsed.
+        OSError: The ExifTool executable cannot be launched.
+    """
+    text = run_command(
+        [settings.image.metadata_command, "-j", "-G1", "-XMP-dc:Description",
+         "-XMP-dc:Subject", str(source)],
+        verbose, capture_stdout=True, timeout=settings.ocr.command_timeout,
+    )
+    try:
+        record = json.loads(text)[0]
+    except (ValueError, IndexError, TypeError):
+        raise WorkflowError("Cannot read image metadata.") from None
+    return bool(record.get("XMP-dc:Description") and record.get("XMP-dc:Subject"))
+
+
 def resolve_input_path(path: Path) -> Path:
     """Resolve symlinks and validate a supported PDF or image path.
 
@@ -871,7 +912,7 @@ def replace_original_file(original: Path, replacement: Path, initial_stat: os.st
 
 def process(
     source: Path, settings: Settings | None = None, redo: bool = False, verbose: bool = False,
-    *, dry_run: bool = False,
+    *, dry_run: bool = False, skip_processed: bool = False,
 ) -> None:
     """OCR a PDF or image and store its summary and keywords in place.
 
@@ -881,6 +922,10 @@ def process(
         redo: Replace invisible PDF OCR text; irrelevant for images.
         verbose: Print progress, subprocess output, and generated metadata.
         dry_run: Print generated metadata without modifying the source.
+        skip_processed: Return without OCR or inference when the file
+            already has a description and keywords. Metadata written
+            by other tools counts, so manually described files are
+            skipped as well.
 
     Raises:
         WorkflowError: OCR, generation, metadata writing, or verification
@@ -898,6 +943,13 @@ def process(
     source = resolve_input_path(source)
     initial_stat = source.stat()
     is_image = source.suffix.lower() in IMAGE_SUFFIXES
+    # Checked before any temporary files, OCR, or model requests are created.
+    if skip_processed:
+        done = (has_image_metadata(source, settings, verbose) if is_image
+                else has_pdf_metadata(source, settings.ocr, verbose))
+        if done:
+            report_progress(f"Skipping already processed file: {source}", verbose)
+            return
     with tempfile.TemporaryDirectory(prefix=".ocr-summary-", dir=source.parent) as folder:
         work = Path(folder)
         ocr_pdf = work / "ocr.pdf"
@@ -1065,6 +1117,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
     ocr.add_argument("--optimize", type=int, choices=range(4), default=0, help="OCRmyPDF optimization level")
     ocr.add_argument("--ocrmypdf-command", type=nonempty_text, default="ocrmypdf", help="OCRmyPDF executable name or path")
     ocr.add_argument("--pdftotext-command", type=nonempty_text, default="pdftotext", help="pdftotext executable name or path")
+    ocr.add_argument("--pdfinfo-command", type=nonempty_text, default="pdfinfo", help="pdfinfo executable name or path (used by --skip-processed)")
     ocr.add_argument("--command-timeout", type=positive_seconds, help="Timeout in seconds for each external command (default: unlimited)")
     image = parser.add_argument_group("Images")
     image.add_argument("--image-dpi", type=positive_integer, default=300, help="DPI assigned to temporary image OCR input")
@@ -1093,6 +1146,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
     behavior = parser.add_argument_group("Execution")
     behavior.add_argument("-v", "--verbose", action="store_true", help="Show progress, subprocess output, and the summary")
     behavior.add_argument("--redo-ocr", action="store_true", help="Replace the existing invisible OCR text layer")
+    behavior.add_argument("--skip-processed", action="store_true", help="Skip files that already have an embedded description and keywords")
     behavior.add_argument("--dry-run", action="store_true", help="Print the summary and leave the original file unchanged")
     return parser
 
@@ -1128,7 +1182,8 @@ def settings_from_arguments(args: argparse.Namespace, parser: argparse.ArgumentP
             disable_correction=args.disable_language_correction,
             renderer=args.pdf_renderer, jobs=args.jobs, output_type=args.output_type,
             optimize=args.optimize, command=args.ocrmypdf_command,
-            text_command=args.pdftotext_command, command_timeout=args.command_timeout,
+            text_command=args.pdftotext_command, info_command=args.pdfinfo_command,
+            command_timeout=args.command_timeout,
         ),
         ollama=OllamaSettings(
             model=args.model, url=args.ollama_url, timeout=args.timeout,
@@ -1160,6 +1215,7 @@ def configure_command_search_path() -> None:
 
 def check_required_commands(
     parser: argparse.ArgumentParser, settings: Settings, files: Sequence[Path],
+    skip_processed: bool = False,
 ) -> None:
     """Check the external tools needed for the requested file types.
 
@@ -1167,6 +1223,7 @@ def check_required_commands(
         parser: Parser used to report missing commands.
         settings: OCR, extraction, conversion, and metadata commands.
         files: Input paths used to identify image-specific dependencies.
+        skip_processed: Whether pdfinfo is needed to detect processed PDFs.
 
     Raises:
         SystemExit: A command is unavailable; exits with status 2.
@@ -1177,6 +1234,8 @@ def check_required_commands(
     commands = [settings.ocr.command, settings.ocr.text_command]
     if any(path.suffix.lower() in IMAGE_SUFFIXES for path in files):
         commands.extend((settings.image.converter, settings.image.metadata_command))
+    if skip_processed and any(path.suffix.lower() not in IMAGE_SUFFIXES for path in files):
+        commands.append(settings.ocr.info_command)
     for command in commands:
         if not shutil.which(command):
             parser.error(f"{command} is not on PATH.")
@@ -1208,7 +1267,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     settings = settings_from_arguments(args, parser)
     configure_command_search_path()
-    check_required_commands(parser, settings, args.files)
+    check_required_commands(parser, settings, args.files, args.skip_processed)
 
     try:
         check_ollama(settings.ollama, args.verbose)
@@ -1219,7 +1278,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     failed = False
     for source in args.files:
         try:
-            process(source, settings, args.redo_ocr, args.verbose, dry_run=args.dry_run)
+            process(
+                source, settings, args.redo_ocr, args.verbose,
+                dry_run=args.dry_run, skip_processed=args.skip_processed,
+            )
         except (OSError, WorkflowError) as error:
             print(f"Failed for {source}: {error}", file=sys.stderr)
             failed = True

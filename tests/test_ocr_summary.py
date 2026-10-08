@@ -214,7 +214,7 @@ class PdfOcrSummaryTests(unittest.TestCase):
         with patch.object(workflow.shutil, "which", return_value="found"), \
              patch.object(workflow, "process") as process:
             self.assertEqual(workflow.main(["--dry-run", "input.pdf"]), 0)
-        self.assertEqual(process.call_args.kwargs, {"dry_run": True})
+        self.assertEqual(process.call_args.kwargs, {"dry_run": True, "skip_processed": False})
 
     def test_real_child_output_silent_on_success(self):
         stdout, stderr = io.StringIO(), io.StringIO()
@@ -485,6 +485,94 @@ class OllamaPreflightTests(unittest.TestCase):
         with patch.object(workflow, "send_ollama_request", return_value={"capabilities": ["completion"]}):
             with self.assertRaisesRegex(workflow.WorkflowError, "does not support --think"):
                 workflow.check_ollama(workflow.OllamaSettings(think=True), False)
+
+
+class SkipProcessedTests(unittest.TestCase):
+    """Verify that --skip-processed avoids OCR and inference for described files."""
+
+    def process_with_info(self, name, info, **kwargs):
+        """Run process() on a placeholder file with mocked metadata output."""
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / name
+            source.write_bytes(b"original")
+            stat = source.stat()
+            with patch.object(workflow, "run_command", return_value=info) as run, \
+                 patch.object(workflow, "apply_ocr") as ocr, \
+                 patch.object(workflow, "prepare_image") as prepare, \
+                 patch.object(workflow, "summarize_document") as summarize:
+                workflow.process(source, skip_processed=True, **kwargs)
+            self.assertEqual(source.read_bytes(), b"original")
+            self.assertEqual(source.stat().st_mtime_ns, stat.st_mtime_ns)
+            self.assertEqual(list(source.parent.iterdir()), [source])
+            return run, ocr, prepare, summarize
+
+    def test_pdf_with_subject_and_keywords_is_skipped(self):
+        info = "Title:          Scan\nSubject:        Eine Beschreibung.\nKeywords:       Kanban, WIP\nPages: 1\n"
+        run, ocr, prepare, summarize = self.process_with_info("done.pdf", info)
+        self.assertEqual(run.call_args.args[0][0], "pdfinfo")
+        ocr.assert_not_called()
+        summarize.assert_not_called()
+
+    def test_pdf_missing_either_field_is_processed(self):
+        for info in ("Title: Scan\n", "Subject: Text\n", "Keywords: Kanban\n",
+                     "Subject:\nKeywords:   \n"):
+            with self.subTest(info=info), \
+                 tempfile.TemporaryDirectory() as directory:
+                source = Path(directory) / "new.pdf"
+                source.write_bytes(b"original")
+                with patch.object(workflow, "run_command", return_value=info), \
+                     patch.object(workflow, "apply_ocr") as ocr, \
+                     patch.object(workflow, "extract_pdf_text", return_value="Text"), \
+                     patch.object(workflow, "summarize_document",
+                                  return_value=workflow.DocumentSummary("S", ("k",))), \
+                     patch.object(workflow, "write_pdf_metadata",
+                                  side_effect=lambda src, dst, *a: dst.write_bytes(b"new")):
+                    workflow.process(source, skip_processed=True)
+                ocr.assert_called_once()
+                self.assertEqual(source.read_bytes(), b"new")
+
+    def test_image_with_xmp_description_and_keywords_is_skipped(self):
+        info = json.dumps([{"SourceFile": "x", "XMP-dc:Description": "Text", "XMP-dc:Subject": ["a"]}])
+        run, ocr, prepare, summarize = self.process_with_info("done.JPG", info)
+        self.assertEqual(run.call_args.args[0][0], "exiftool")
+        prepare.assert_not_called()
+        ocr.assert_not_called()
+        summarize.assert_not_called()
+
+    def test_image_without_metadata_is_not_skipped(self):
+        with patch.object(workflow, "run_command", return_value=json.dumps([{"SourceFile": "x"}])):
+            self.assertFalse(workflow.has_image_metadata(Path("x.png"), workflow.Settings(), False))
+
+    def test_unreadable_image_metadata_is_an_error(self):
+        with patch.object(workflow, "run_command", return_value="not json"), \
+             self.assertRaises(workflow.WorkflowError):
+            workflow.has_image_metadata(Path("x.png"), workflow.Settings(), False)
+
+    def test_skip_is_reported_only_when_verbose(self):
+        info = "Subject: S\nKeywords: k\n"
+        for verbose in (False, True):
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                self.process_with_info("done.pdf", info, verbose=verbose)
+            self.assertEqual("Skipping" in stderr.getvalue(), verbose)
+
+    def test_cli_passes_flag_and_requires_pdfinfo(self):
+        with patch.object(workflow.shutil, "which", return_value="found"), \
+             patch.object(workflow, "check_ollama"), \
+             patch.object(workflow, "process") as process:
+            self.assertEqual(workflow.main(["--skip-processed", "input.pdf"]), 0)
+        self.assertTrue(process.call_args.kwargs["skip_processed"])
+        with patch.object(workflow.shutil, "which", side_effect=lambda c: None if c == "pdfinfo" else c), \
+             patch.object(workflow, "check_ollama"), \
+             contextlib.redirect_stderr(io.StringIO()), \
+             self.assertRaises(SystemExit) as raised:
+            workflow.main(["--skip-processed", "input.pdf"])
+        self.assertEqual(raised.exception.code, 2)
+        # Without the flag, pdfinfo stays optional.
+        with patch.object(workflow.shutil, "which", side_effect=lambda c: None if c == "pdfinfo" else c), \
+             patch.object(workflow, "check_ollama"), \
+             patch.object(workflow, "process"):
+            self.assertEqual(workflow.main(["input.pdf"]), 0)
 
 
 if __name__ == "__main__":

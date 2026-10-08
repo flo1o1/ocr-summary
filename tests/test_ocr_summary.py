@@ -601,5 +601,171 @@ class VersionTests(unittest.TestCase):
             self.assertEqual(workflow.program_version(), "9.9.9")
 
 
+class AppleDoubleTests(unittest.TestCase):
+    """Verify that macOS "._" companion files are skipped, not failed."""
+
+    def test_appledouble_files_are_skipped_without_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            companion = Path(directory) / "._Report.pdf"
+            companion.write_bytes(workflow.APPLEDOUBLE_MAGIC + b"\x00\x02\x00\x00")
+            real = Path(directory) / "Report.pdf"
+            real.write_bytes(b"%PDF-1.7")
+            stderr = io.StringIO()
+            with patch.object(workflow.shutil, "which", return_value="found"), \
+                 patch.object(workflow, "check_ollama"), \
+                 patch.object(workflow, "process") as process, \
+                 contextlib.redirect_stderr(stderr):
+                self.assertEqual(workflow.main(["-v", str(companion), str(real)]), 0)
+            self.assertEqual([c.args[0] for c in process.call_args_list], [real])
+            self.assertIn("Skipping AppleDouble", stderr.getvalue())
+
+    def test_real_file_with_dot_underscore_name_is_processed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "._notes.pdf"
+            path.write_bytes(b"%PDF-1.7")
+            self.assertFalse(workflow.is_appledouble_file(path))
+            self.assertFalse(workflow.is_appledouble_file(Path(directory) / "._missing.pdf"))
+
+
+class VolumeRetryTests(unittest.TestCase):
+    """Verify waiting for an unreachable network volume and resuming."""
+
+    def setUp(self):
+        self.directory = self.enterContext(tempfile.TemporaryDirectory())
+        self.source = Path(self.directory) / "Scan.pdf"
+        self.source.write_bytes(b"original")
+        self.up = True
+        self.enterContext(patch.object(workflow, "is_reachable", side_effect=lambda path: self.up))
+        self.retry = workflow.RetrySettings(interval=5, timeout=60)
+
+    def run_retry(self, run, seen=None, retry=None, wait=None):
+        seen = {self.source.parent} if seen is None else seen
+        return workflow.process_with_volume_retry(
+            self.source, run, retry or self.retry, seen, False,
+            wait=wait or (lambda *args: True),
+        )
+
+    def test_file_is_repeated_once_the_volume_returns(self):
+        calls = []
+
+        def run():
+            calls.append(1)
+            if len(calls) == 1:
+                self.up = False
+                raise OSError(57, "Socket is not connected")
+
+        def wait(path, retry, verbose):
+            self.up = True
+            return True
+
+        self.run_retry(run, wait=wait)
+        self.assertEqual(len(calls), 2)
+
+    def test_unseen_directory_fails_immediately(self):
+        self.up = False
+        waited = []
+        with self.assertRaises(OSError):
+            self.run_retry(lambda: (_ for _ in ()).throw(OSError("gone")), seen=set(),
+                           wait=lambda *args: waited.append(1))
+        self.assertEqual(waited, [])
+
+    def test_zero_timeout_disables_waiting(self):
+        def run():
+            self.up = False
+            raise OSError("gone")
+
+        waited = []
+        with self.assertRaises(OSError):
+            self.run_retry(run, retry=workflow.RetrySettings(5, 0),
+                           wait=lambda *args: waited.append(1))
+        self.assertEqual(waited, [])
+
+    def test_failure_on_a_reachable_volume_is_not_retried(self):
+        waited = []
+        with self.assertRaises(workflow.WorkflowError):
+            self.run_retry(lambda: (_ for _ in ()).throw(workflow.WorkflowError("OCR failed")),
+                           wait=lambda *args: waited.append(1))
+        self.assertEqual(waited, [])
+
+    def test_timeout_raises_volume_unavailable(self):
+        def run():
+            self.up = False
+            raise OSError("gone")
+
+        with self.assertRaises(workflow.VolumeUnavailableError):
+            self.run_retry(run, wait=lambda *args: False)
+
+    def test_file_replaced_before_the_outage_is_not_processed_again(self):
+        calls = []
+
+        def run():
+            calls.append(1)
+            # Replacement succeeded, then cleanup lost the volume.
+            self.source.write_bytes(b"processed with metadata")
+            self.up = False
+            raise OSError(5, "Input/output error")
+
+        def wait(path, retry, verbose):
+            self.up = True
+            return True
+
+        self.run_retry(run, wait=wait)
+        self.assertEqual(calls, [1])
+
+    def test_wait_polls_until_reachable_or_deadline(self):
+        now = [0.0]
+        sleeps = []
+
+        def sleep(seconds):
+            sleeps.append(seconds)
+            now[0] += seconds
+
+        states = iter([False, False, True])
+        with patch.object(workflow, "is_reachable", side_effect=lambda path: next(states)), \
+             contextlib.redirect_stderr(io.StringIO()) as stderr:
+            self.assertTrue(workflow.wait_for_volume(
+                self.source, self.retry, False, sleep=sleep, clock=lambda: now[0]))
+        self.assertEqual(sleeps, [5, 5, 5])
+        self.assertIn("waiting up to 60 seconds", stderr.getvalue())
+        with patch.object(workflow, "is_reachable", return_value=False), \
+             contextlib.redirect_stderr(io.StringIO()):
+            now[0] = 0.0
+            self.assertFalse(workflow.wait_for_volume(
+                self.source, workflow.RetrySettings(25, 60), False,
+                sleep=sleep, clock=lambda: now[0]))
+        self.assertEqual(now[0], 60.0)
+
+    def test_batch_continues_and_stops_waiting_after_a_timeout(self):
+        other = Path(self.directory) / "Other.pdf"
+        other.write_bytes(b"x")
+        outcomes = []
+
+        def process(path, *args, **kwargs):
+            outcomes.append(path.name)
+            self.up = False
+            raise OSError(57, "Socket is not connected")
+
+        stderr = io.StringIO()
+        with patch.object(workflow.shutil, "which", return_value="found"), \
+             patch.object(workflow, "check_ollama"), \
+             patch.object(workflow, "process", side_effect=process), \
+             contextlib.redirect_stderr(stderr):
+            status = workflow.main([
+                "--retry-timeout", "0.05", "--retry-interval", "0.01",
+                str(self.source), str(other),
+            ])
+        self.assertEqual(status, 1)
+        # The first file waits once; the second fails at once instead of waiting again.
+        self.assertEqual(stderr.getvalue().count("is unreachable; waiting"), 1)
+        self.assertEqual(stderr.getvalue().count("Failed for"), 2)
+        self.assertEqual(outcomes, ["Scan.pdf", "Other.pdf"])
+
+    def test_timeout_option_accepts_zero_and_rejects_negative(self):
+        self.assertEqual(workflow.nonnegative_seconds("0"), 0.0)
+        for value in ("-1", "inf", "nan"):
+            with self.assertRaises(workflow.argparse.ArgumentTypeError):
+                workflow.nonnegative_seconds(value)
+
+
 if __name__ == "__main__":
     unittest.main()

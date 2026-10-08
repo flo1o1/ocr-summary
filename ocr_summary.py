@@ -32,6 +32,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import tomllib
 import urllib.error
 import urllib.request
@@ -44,6 +45,9 @@ MAX_RESPONSE_TOKENS = 1536
 MAX_SECTION_CHARACTERS = 6000
 OCR_WORKERS = 4
 PAGE_SEPARATOR = "[Page break]"
+VOLUME_RETRY_INTERVAL_SECONDS = 30.0
+VOLUME_RETRY_TIMEOUT_SECONDS = 3600.0
+APPLEDOUBLE_MAGIC = b"\x00\x05\x16\x07"
 IMAGE_SUFFIXES = frozenset((".jpg", ".jpeg", ".png", ".heic", ".heif"))
 SUPPORTED_SUFFIXES = IMAGE_SUFFIXES | {".pdf"}
 
@@ -232,6 +236,18 @@ class ImageSettings:
 
 
 @dataclass(frozen=True)
+class RetrySettings:
+    """Configure waiting for a network volume that became unreachable.
+
+    Attributes:
+        interval: Seconds between availability checks.
+        timeout: Longest wait per outage in seconds; 0 disables waiting.
+    """
+    interval: float = VOLUME_RETRY_INTERVAL_SECONDS
+    timeout: float = VOLUME_RETRY_TIMEOUT_SECONDS
+
+
+@dataclass(frozen=True)
 class DocumentSummary:
     """Store the final summary and deduplicated document keywords.
 
@@ -264,6 +280,10 @@ class Settings:
 
 class WorkflowError(RuntimeError):
     """Signal an expected failure for a concise CLI error message."""
+
+
+class VolumeUnavailableError(WorkflowError):
+    """Signal that a volume stayed unreachable for the whole wait."""
 
 
 def report_progress(message: str, verbose: bool) -> None:
@@ -886,6 +906,111 @@ def has_image_metadata(source: Path, settings: Settings, verbose: bool) -> bool:
     return bool(record.get("XMP-dc:Description") and record.get("XMP-dc:Subject"))
 
 
+def is_appledouble_file(path: Path) -> bool:
+    """Report whether a path is a macOS AppleDouble companion file.
+
+    Volumes without native extended attributes (SMB, exFAT, NAS) store
+    them in "._name" files that keep the original's suffix but are not
+    PDFs or images. Both the name prefix and the magic number must match,
+    so a real file that merely starts with "._" is still processed.
+    """
+    if not path.name.startswith("._"):
+        return False
+    try:
+        with path.open("rb") as file:
+            return file.read(len(APPLEDOUBLE_MAGIC)) == APPLEDOUBLE_MAGIC
+    except OSError:
+        return False
+
+
+def is_reachable(path: Path) -> bool:
+    """Report whether the directory containing path can be opened.
+
+    Opening the directory forces real I/O; a stat() alone can be answered
+    from a cache after a network volume has disappeared.
+    """
+    try:
+        with os.scandir(path.parent):
+            return True
+    except OSError:
+        return False
+
+
+def wait_for_volume(
+    path: Path, retry: RetrySettings, verbose: bool,
+    *, sleep=time.sleep, clock=time.monotonic,
+) -> bool:
+    """Poll until the directory of path is reachable or the timeout ends.
+
+    Returns:
+        True if the directory became reachable again.
+    """
+    # Unattended runs need to see why they pause, so this is not verbose-only.
+    print(
+        f"Volume of {path} is unreachable; waiting up to {retry.timeout:g} seconds.",
+        file=sys.stderr, flush=True,
+    )
+    deadline = clock() + retry.timeout
+    while clock() < deadline:
+        sleep(min(retry.interval, max(0.0, deadline - clock())))
+        if is_reachable(path):
+            report_progress(f"Volume is reachable again: {path.parent}", verbose)
+            return True
+    return False
+
+
+def process_with_volume_retry(
+    source: Path, run, retry: RetrySettings, seen_directories: set[Path], verbose: bool,
+    *, wait=wait_for_volume,
+) -> None:
+    """Call run() and repeat it after an unreachable volume returns.
+
+    Args:
+        source: Input path as given on the command line.
+        run: Zero-argument callable that processes source.
+        retry: Wait interval and timeout; a zero timeout disables waiting.
+        seen_directories: Parent directories reachable earlier in this
+            batch. It is updated. Only these can count as an outage, so a
+            mistyped or never-mounted path fails immediately.
+        verbose: Whether to report progress.
+
+    Raises:
+        VolumeUnavailableError: The volume did not return in time.
+        WorkflowError, OSError: Failures unrelated to availability.
+
+    The input is replaced atomically, so repeating an interrupted file
+    starts from the intact original. If the fingerprint shows that the
+    replacement completed before the outage (for example during cleanup),
+    the file is not processed again.
+    """
+    while True:
+        if is_reachable(source):
+            seen_directories.add(source.parent)
+        try:
+            before = file_fingerprint(source.resolve(strict=True).stat())
+        except OSError:
+            before = None
+        try:
+            run()
+            return
+        except (OSError, WorkflowError) as error:
+            if (retry.timeout <= 0 or source.parent not in seen_directories
+                    or is_reachable(source)):
+                raise
+            if not wait(source, retry, verbose):
+                raise VolumeUnavailableError(
+                    f"Volume unreachable for {retry.timeout:g} seconds ({error})"
+                ) from error
+            try:
+                after = file_fingerprint(source.resolve(strict=True).stat())
+            except OSError:
+                after = None
+            if before is not None and after is not None and after != before:
+                report_progress(f"Already replaced before the outage: {source}", verbose)
+                return
+            report_progress(f"Repeating after the outage: {source}", verbose)
+
+
 def resolve_input_path(path: Path) -> Path:
     """Resolve symlinks and validate a supported PDF or image path.
 
@@ -1020,6 +1145,19 @@ def positive_seconds(value: str) -> float:
     number = float(value)
     if not math.isfinite(number) or number <= 0:
         raise argparse.ArgumentTypeError("must be a finite positive number")
+    return number
+
+
+def nonnegative_seconds(value: str) -> float:
+    """Parse a finite duration in seconds that may be zero for argparse.
+
+    Raises:
+        ValueError: The value is not numeric.
+        argparse.ArgumentTypeError: The number is negative or not finite.
+    """
+    number = float(value)
+    if not math.isfinite(number) or number < 0:
+        raise argparse.ArgumentTypeError("must be a finite number, 0 or greater")
     return number
 
 
@@ -1171,6 +1309,8 @@ def build_argument_parser() -> argparse.ArgumentParser:
     )
     behavior.add_argument("-v", "--verbose", action="store_true", help="Show progress, subprocess output, and the summary")
     behavior.add_argument("--redo-ocr", action="store_true", help="Replace the existing invisible OCR text layer")
+    behavior.add_argument("--retry-timeout", type=nonnegative_seconds, default=VOLUME_RETRY_TIMEOUT_SECONDS, help="Seconds to wait for an unreachable network volume before failing the file; 0 fails immediately")
+    behavior.add_argument("--retry-interval", type=positive_seconds, default=VOLUME_RETRY_INTERVAL_SECONDS, help="Seconds between availability checks while waiting")
     behavior.add_argument("--skip-processed", action="store_true", help="Skip files that already have an embedded description and keywords")
     behavior.add_argument("--dry-run", action="store_true", help="Print the summary and leave the original file unchanged")
     return parser
@@ -1300,16 +1440,28 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"Preflight failed: {error}", file=sys.stderr)
         return 1
 
+    retry = RetrySettings(args.retry_interval, args.retry_timeout)
+    seen_directories: set[Path] = set()
     failed = False
     for source in args.files:
+        if is_appledouble_file(source):
+            report_progress(f"Skipping AppleDouble companion file: {source}", args.verbose)
+            continue
         try:
-            process(
-                source, settings, args.redo_ocr, args.verbose,
-                dry_run=args.dry_run, skip_processed=args.skip_processed,
+            process_with_volume_retry(
+                source,
+                lambda source=source: process(
+                    source, settings, args.redo_ocr, args.verbose,
+                    dry_run=args.dry_run, skip_processed=args.skip_processed,
+                ),
+                retry, seen_directories, args.verbose,
             )
         except (OSError, WorkflowError) as error:
             print(f"Failed for {source}: {error}", file=sys.stderr)
             failed = True
+            if isinstance(error, VolumeUnavailableError):
+                # Later files on the same volume would each wait again.
+                retry = RetrySettings(retry.interval, 0.0)
     return int(failed)
 
 

@@ -265,6 +265,8 @@ are not a deterministic filter for every possible model response.
 | --- | --- |
 | `-v`, `--verbose` | Show progress, subprocess output, section-condensation details, and the summary. |
 | `--redo-ocr` | Replace an existing invisible PDF OCR text layer while preserving visible text; ignored for images. |
+| `--retry-timeout SECONDS` | Longest wait per outage when a network volume becomes unreachable, default `3600`; `0` fails the file immediately. |
+| `--retry-interval SECONDS` | Pause between availability checks while waiting, default `30`. |
 | `--skip-processed` | Skip files that already have both a description and keywords: PDF Subject and Keywords, or image `XMP-dc:Description` and `XMP-dc:Subject`. Skipped files get no OCR or model request and are reported only with `--verbose`. |
 | `--dry-run` | Print each filename, summary, and keyword list without modifying the originals. |
 | `--version` | Print the program and Python version, then exit. |
@@ -276,10 +278,33 @@ Options can be combined:
 ocr-summary --dry-run --redo-ocr --verbose "Workshop notes.pdf"
 ```
 
+macOS AppleDouble companion files (`._name.pdf`, created on SMB, exFAT, and NAS volumes) are
+skipped automatically and reported only with `--verbose`, so `find . -name "*.pdf"` works on such
+volumes.
+
 `--skip-processed` checks only whether both fields are filled, not who wrote
 them, so files you described manually are skipped too. Use it for scheduled runs
 over a folder. To process a skipped file again, run it without the option; the
 existing description and keywords are replaced.
+
+### Network volumes
+
+If the directory of a file becomes unreachable while a batch runs (for example a
+disconnected SMB share), the script prints a warning to stderr, checks the
+directory every `--retry-interval` seconds, and repeats the interrupted file from
+the start once it returns. The original is replaced atomically, so an interrupted
+file is still intact. Files already finished earlier in the batch are not touched
+again. If the replacement had already completed when the connection dropped, the
+changed file is detected and not processed a second time.
+
+Waiting starts only for a directory that was reachable earlier in the same run, so a
+mistyped path or a volume that was never mounted still fails at once. If the volume
+does not return within `--retry-timeout`, that file fails, later files on the
+unreachable volume fail without waiting again, and the exit status is 1. To
+continue later, run the same command again with `--skip-processed`; it skips
+everything that already has a description and keywords. An outage can leave a
+`.ocr-summary-*` working directory beside the input that could not be cleaned up;
+delete it manually.
 
 ## How it works
 

@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
+import importlib.metadata
 import json
 import math
 import os
@@ -31,6 +32,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import tomllib
 import urllib.error
 import urllib.request
 from urllib.parse import urlsplit
@@ -63,6 +65,24 @@ SUMMARY_SYSTEM_PROMPT = (
     "summary string. "
     "Return only JSON matching the requested schema."
 )
+
+
+def program_version() -> str:
+    """Return the installed package version, or the checkout's version.
+
+    A pipx installation provides package metadata. A repository checkout
+    has none, so pyproject.toml beside this file stays the single source
+    of truth instead of a duplicated constant that could drift.
+    """
+    try:
+        return importlib.metadata.version("ocr-summary")
+    except importlib.metadata.PackageNotFoundError:
+        pass
+    try:
+        with (Path(__file__).resolve().parent / "pyproject.toml").open("rb") as file:
+            return tomllib.load(file)["project"]["version"]
+    except (OSError, KeyError, tomllib.TOMLDecodeError):
+        return "unknown"
 
 
 def default_summary_language() -> str:
@@ -1144,6 +1164,11 @@ def build_argument_parser() -> argparse.ArgumentParser:
     summary.add_argument("--max-summary-rounds", type=positive_integer, default=10, help="Maximum section condensation rounds")
     summary.add_argument("--keyword-count", type=positive_integer, default=10, help="Maximum keywords requested in the final summary call")
     behavior = parser.add_argument_group("Execution")
+    behavior.add_argument(
+        "--version", action="version",
+        version=f"%(prog)s {program_version()} (Python {sys.version.split()[0]})",
+        help="Show the program and Python version and exit",
+    )
     behavior.add_argument("-v", "--verbose", action="store_true", help="Show progress, subprocess output, and the summary")
     behavior.add_argument("--redo-ocr", action="store_true", help="Replace the existing invisible OCR text layer")
     behavior.add_argument("--skip-processed", action="store_true", help="Skip files that already have an embedded description and keywords")

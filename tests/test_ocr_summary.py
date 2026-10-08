@@ -575,5 +575,31 @@ class SkipProcessedTests(unittest.TestCase):
             self.assertEqual(workflow.main(["input.pdf"]), 0)
 
 
+class VersionTests(unittest.TestCase):
+    """Verify --version output and its version sources."""
+
+    def test_version_option_prints_and_exits_without_files(self):
+        stdout = io.StringIO()
+        with patch.object(workflow, "program_version", return_value="1.2.3"), \
+             contextlib.redirect_stdout(stdout), self.assertRaises(SystemExit) as raised:
+            workflow.main(["--version"])
+        self.assertEqual(raised.exception.code, 0)
+        self.assertRegex(stdout.getvalue(), r" 1\.2\.3 \(Python 3\.\d+\.\d+\)\n$")
+
+    def test_checkout_version_matches_pyproject(self):
+        expected = workflow.tomllib.loads(
+            (SCRIPT.parent / "pyproject.toml").read_text(encoding="utf-8")
+        )["project"]["version"]
+        with patch.object(
+            workflow.importlib.metadata, "version",
+            side_effect=workflow.importlib.metadata.PackageNotFoundError,
+        ):
+            self.assertEqual(workflow.program_version(), expected)
+
+    def test_installed_metadata_takes_precedence(self):
+        with patch.object(workflow.importlib.metadata, "version", return_value="9.9.9"):
+            self.assertEqual(workflow.program_version(), "9.9.9")
+
+
 if __name__ == "__main__":
     unittest.main()

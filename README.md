@@ -267,6 +267,7 @@ are not a deterministic filter for every possible model response.
 | `--redo-ocr` | Replace an existing invisible PDF OCR text layer while preserving visible text; ignored for images. |
 | `--skip-processed` | Skip files that already have both a description and keywords: PDF Subject and Keywords, or image `XMP-dc:Description` and `XMP-dc:Subject`. Skipped files get no OCR or model request and are reported only with `--verbose`. |
 | `--dry-run` | Print each filename, summary, and keyword list without modifying the originals. |
+| `--version` | Print the program and Python version, then exit. |
 | `-h`, `--help` | Show command-line help. |
 
 Options can be combined:

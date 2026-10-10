@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python
 # SPDX-License-Identifier: MIT
 """Run OCR Summary directly from a repository checkout."""
 

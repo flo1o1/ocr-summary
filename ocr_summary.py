@@ -33,10 +33,14 @@ import subprocess
 import sys
 import tempfile
 import time
-import tomllib
 import urllib.error
 import urllib.request
 from urllib.parse import urlsplit
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # Python < 3.11; only the checkout version lookup needs it.
+    tomllib = None
 
 DEFAULT_MODEL = "qwen3.5:9b"
 OLLAMA_TIMEOUT_SECONDS = 1800
@@ -82,6 +86,8 @@ def program_version() -> str:
         return importlib.metadata.version("ocr-summary")
     except importlib.metadata.PackageNotFoundError:
         pass
+    if tomllib is None:
+        return "unknown"
     try:
         with (Path(__file__).resolve().parent / "pyproject.toml").open("rb") as file:
             return tomllib.load(file)["project"]["version"]

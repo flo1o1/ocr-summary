@@ -1265,8 +1265,9 @@ class DefaultsHelpFormatter(argparse.ArgumentDefaultsHelpFormatter):
 
 def build_argument_parser() -> argparse.ArgumentParser:
     """Build grouped CLI options with defaults and validators."""
+    # Fixed prog: argv[0] differs between pipx, binary, and Homebrew launchers.
     parser = argparse.ArgumentParser(
-        description=__doc__, formatter_class=DefaultsHelpFormatter
+        prog="ocr-summary", description=__doc__, formatter_class=DefaultsHelpFormatter
     )
     parser.add_argument("files", type=Path, nargs="+", help="PDF, JPEG, PNG, HEIC, or HEIF files to process")
     ocr = parser.add_argument_group("OCR and PDF output")

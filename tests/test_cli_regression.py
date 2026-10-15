@@ -171,6 +171,14 @@ class LauncherRegressionTests(unittest.TestCase):
         self.assertNotIn("unknown", version.stdout)
         self.assertEqual(launch("--help").returncode, 0)
 
+    def test_version_uses_the_command_name_when_run_as_a_script(self):
+        """Homebrew runs ocr_summary.py directly; the name must not leak."""
+        result = subprocess.run(
+            [sys.executable, str(SCRIPT), "--version"],
+            capture_output=True, text=True, timeout=LAUNCH_TIMEOUT_SECONDS,
+        )
+        self.assertTrue(result.stdout.startswith("ocr-summary "), result.stdout)
+
     def test_missing_files_argument_exits_with_status_two(self):
         self.assertEqual(launch().returncode, 2)
 

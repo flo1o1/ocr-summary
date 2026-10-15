@@ -62,6 +62,22 @@ their compressed image data, and that failures leave originals unchanged.
 ExifTool's ImageDataHash can help compare image payloads. Mocked unit tests do
 not validate native decoding, OCR accuracy, or a model's summary quality.
 
+`tests/test_pdf_integration.py` automates one of these checks for PDFs. It draws
+two synthetic image-only PDFs, runs `ocr-summary *.pdf` on them with the real
+OCRmyPDF, AppleOCR, and Poppler, and mocks only Ollama. It asserts a silent run
+with status 0, that the OCR text layer contains the expected words, that Subject
+holds the mocked summary, and that no temporary files, backups, or sidecars
+remain. It skips itself without macOS, the native tools, Pillow, or Helvetica,
+so it needs a Pillow-capable interpreter, for example:
+
+```sh
+python3 -m venv .venv && .venv/bin/pip install pillow
+.venv/bin/python -m unittest tests.test_pdf_integration -v
+```
+
+It does not cover images, `--redo-ocr`, or model quality. GitHub Actions does
+not run it; the unit-test job uses Ubuntu, where it always skips.
+
 Do not submit private documents, photographs with personal metadata, machine
 paths, credentials, or complete chat logs. Generate sanitized fixtures if a
 reproduction needs files. The default ignore rules exclude document and image

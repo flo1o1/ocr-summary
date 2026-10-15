@@ -80,3 +80,11 @@ See [GitHub's commit email documentation](https://docs.github.com/en/account-and
 This project is licensed under MIT. Submit code and documentation that you have
 the right to contribute under the project license; identify any incorporated
 third-party material and its license.
+
+## Releasing
+
+Bump `version` in `pyproject.toml`, commit, then push a matching tag such as
+`v0.5.0`. `.github/workflows/release.yml` tests, builds the unsigned arm64
+PyInstaller binary, and attaches it with a checksum to a GitHub release. Then
+update the URL and sha256 in `packaging/homebrew/ocr-summary.rb` and copy it
+to the tap repository.

@@ -76,6 +76,24 @@ an existing installation from this checkout, use `pipx install --force .`.
 Alternatively, run `./ocr-summary` or `python3 ocr_summary.py` directly from the
 repository without installing this wrapper.
 
+### Prebuilt binary or Homebrew
+
+Each tagged release on GitHub provides an unsigned Apple Silicon binary, so
+neither Python nor pipx is needed for the wrapper. The native tools listed under
+Requirements are still required.
+
+```sh
+tar -xzf ocr-summary-vX.Y.Z-macos-arm64.tar.gz
+shasum -a 256 -c ocr-summary-vX.Y.Z-macos-arm64.tar.gz.sha256   # run next to the archive
+xattr -d com.apple.quarantine ocr-summary   # binary is not notarized
+mv ocr-summary /usr/local/bin/
+```
+
+Check the checksum before removing the quarantine flag. The Homebrew formula
+template in `packaging/homebrew/ocr-summary.rb` is meant for a tap named
+`homebrew-ocr-summary`; it installs the wrapper, ExifTool, and Poppler, and
+prints the remaining OCRmyPDF and Ollama steps.
+
 Open a new terminal so PATH changes take effect. If you previously installed
 OCRmyPDF itself through Homebrew, remove that competing installation while
 keeping its dependencies:

@@ -202,6 +202,12 @@ class LauncherRegressionTests(unittest.TestCase):
             "            raise ModuleNotFoundError(\"No module named 'tomllib'\")\n"
             "sys.meta_path.insert(0, Block())\n"
             "sys.modules.pop('tomllib', None)\n"
+            # Installed metadata (e.g. the egg-info beside a checkout) would
+            # answer before the tomllib path is reached.
+            "import importlib.metadata as m\n"
+            "def missing(name):\n"
+            "    raise m.PackageNotFoundError(name)\n"
+            "m.version = missing\n"
             f"sys.argv = [{str(LAUNCHER)!r}, '--version']\n"
             f"sys.path.insert(0, {str(ROOT)!r})\n"
             f"runpy.run_path({str(LAUNCHER)!r}, run_name='__main__')\n"

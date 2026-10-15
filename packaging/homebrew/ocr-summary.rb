@@ -1,10 +1,9 @@
-# Template for a tap (a separate repository named homebrew-ocr-summary).
-# Replace the sha256 with the checksum of the tagged source archive.
+# Formula for the tap repository flo1o1/homebrew-ocr-summary (Formula/ocr-summary.rb).
 class OcrSummary < Formula
   desc "Local Apple OCR summaries and keywords for PDFs and images"
   homepage "https://github.com/flo1o1/ocr-summary"
   url "https://github.com/flo1o1/ocr-summary/archive/refs/tags/v0.5.0.tar.gz"
-  sha256 "REPLACE_WITH_ARCHIVE_SHA256"
+  sha256 "88da25fd81e8b24e3386902cdb3188532eefd842ae9d5abccc5ae73788b6f551"
   license "MIT"
 
   depends_on :macos

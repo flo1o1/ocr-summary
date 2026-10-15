@@ -89,10 +89,16 @@ xattr -d com.apple.quarantine ocr-summary   # binary is not notarized
 mv ocr-summary /usr/local/bin/
 ```
 
-Check the checksum before removing the quarantine flag. The Homebrew formula
-template in `packaging/homebrew/ocr-summary.rb` is meant for a tap named
-`homebrew-ocr-summary`; it installs the wrapper, ExifTool, and Poppler, and
-prints the remaining OCRmyPDF and Ollama steps.
+Check the checksum before removing the quarantine flag. Alternatively, install the
+wrapper with Homebrew, which also installs ExifTool and Poppler:
+
+```sh
+brew tap flo1o1/ocr-summary
+brew install ocr-summary
+```
+
+The formula prints the remaining OCRmyPDF and Ollama steps. Its source is
+`packaging/homebrew/ocr-summary.rb`, mirrored in the tap repository.
 
 Open a new terminal so PATH changes take effect. If you previously installed
 OCRmyPDF itself through Homebrew, remove that competing installation while

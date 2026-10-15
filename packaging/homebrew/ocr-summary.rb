@@ -2,8 +2,8 @@
 class OcrSummary < Formula
   desc "Local Apple OCR summaries and keywords for PDFs and images"
   homepage "https://github.com/flo1o1/ocr-summary"
-  url "https://github.com/flo1o1/ocr-summary/archive/refs/tags/v0.5.0.tar.gz"
-  sha256 "88da25fd81e8b24e3386902cdb3188532eefd842ae9d5abccc5ae73788b6f551"
+  url "https://github.com/flo1o1/ocr-summary/archive/refs/tags/v0.5.1.tar.gz"
+  sha256 "dacd942e81d1335087ef410fd40e8dcdfab789755f456f49560c2e4d10bd9b26"
   license "MIT"
 
   depends_on :macos
